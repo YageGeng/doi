@@ -8,11 +8,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = CrossrefConfig {
         user_agent: Some("doi-basic-example".to_string()),
+        mailto: Some("me@example.com".to_string()),
         ..Default::default()
     };
 
     let client = CrossrefClient::new(config)?;
-    let response = client.fetch_metadata(&doi).await?;
+    let response = client.metadata(&doi).await?;
 
     println!("{}", serde_json::to_string(&response).unwrap());
     // Show the extracted DOI string for reference.

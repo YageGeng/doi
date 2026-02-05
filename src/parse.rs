@@ -44,7 +44,6 @@ impl Doi {
             None
         }
     }
-
 }
 
 /// Extract DOI from a URL or string
@@ -381,8 +380,7 @@ mod tests {
     #[test]
     /// Extracts DOI from real-world article URLs.
     fn doi_extract_real_world_links() {
-        let frontiers =
-            "https://www.frontiersin.org/journals/microbiology/articles/10.3389/fmicb.2017.01663/pdf ";
+        let frontiers = "https://www.frontiersin.org/journals/microbiology/articles/10.3389/fmicb.2017.01663/pdf ";
         let springer = "https://link.springer.com/chapter/10.1007/978-0-387-74907-5_34 ";
         let tykx =
             "http://tykx.xml-journal.net/cn/article/pdf/preview/10.16469/j.css.2011.06.015.pdf";

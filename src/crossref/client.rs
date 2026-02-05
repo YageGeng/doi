@@ -2,46 +2,26 @@ use crate::Doi;
 use crate::crossref::config::CrossrefConfig;
 use crate::crossref::error::*;
 use crate::crossref::models::CrossrefResponse;
-use async_trait::async_trait;
-use governor::clock::DefaultClock;
-use governor::state::InMemoryState;
-use governor::state::NotKeyed;
-use governor::{Quota, RateLimiter};
-use http::Extensions;
+use crate::crossref::rate_limit::RateLimitMiddleware;
 use reqwest::StatusCode;
 use reqwest::header::{RETRY_AFTER, USER_AGENT};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
-use reqwest_retry::policies::ExponentialBackoff;
-use reqwest_retry::{
-    Jitter, RetryDecision, RetryPolicy, RetryTransientMiddleware, Retryable, RetryableStrategy,
-    default_on_request_failure,
-};
+use reqwest_middleware::*;
+use reqwest_retry::{policies::ExponentialBackoff, *};
 use snafu::ResultExt;
-use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
 
-const DEFAULT_MAILTO: &str = "icoderdev@outlook.com";
-
 pub struct CrossrefClient {
     client: ClientWithMiddleware,
     base_url: String,
-    mailto: String,
-    user_agent: Option<String>,
     concurrency: Arc<Semaphore>,
 }
 
 impl CrossrefClient {
     /// Build a Crossref client with retry and rate-limit middleware.
     pub fn new(config: CrossrefConfig) -> std::result::Result<Self, CrossrefError> {
-        let mailto = config
-            .mailto
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_MAILTO.to_string());
-        let user_agent = config.user_agent.filter(|value| !value.trim().is_empty());
-        let base_url = config.base_url.trim_end_matches('/').to_string();
-        let concurrency = Arc::new(Semaphore::new(config.concurrency.max(1)));
+        let concurrency = Arc::new(Semaphore::new(config.concurrency_value().max(1)));
 
         let retry_state = RetryAfterState::new();
         let retry_policy = RetryAfterPolicy::new(
@@ -59,9 +39,11 @@ impl CrossrefClient {
 
         let retry_middleware =
             RetryTransientMiddleware::new_with_policy_and_strategy(retry_policy, retry_strategy);
-        let limiter = RateLimitMiddleware::new(config.rate_limit_per_sec);
+
+        let limiter = RateLimitMiddleware::new(config.rate_limit_per_sec_value());
 
         let client = reqwest::Client::builder()
+            .default_headers(Self::default_headers(&config))
             .timeout(config.timeout)
             .build()
             .context(ReqwestSnafu {
@@ -74,35 +56,26 @@ impl CrossrefClient {
             .build();
 
         Ok(Self {
+            base_url: config.base_url_value(),
             client,
-            base_url,
-            mailto,
-            user_agent,
             concurrency,
         })
     }
 
     /// Fetch metadata for a DOI from the Crossref REST API.
-    pub async fn fetch_metadata(
+    pub async fn metadata(
         &self,
         doi: &Doi,
     ) -> std::result::Result<CrossrefResponse, CrossrefError> {
         let _permit = self.concurrency.acquire().await.context(SemaphoreSnafu {
             stage: "acquire-permit",
         })?;
-        // Use the extracted DOI string directly in the Crossref request URL.
-        let url = format!("{}/works/{}", self.base_url, doi.as_str());
-        let mut request = self
+
+        let url = self.build_url(doi);
+
+        let response = self
             .client
             .get(url)
-            .query(&[("mailto", self.mailto.as_str())]);
-
-        if let Some(app_name) = self.user_agent.as_ref() {
-            let value = format!("{} {}", app_name, self.mailto);
-            request = request.header(USER_AGENT, value);
-        }
-
-        let response = request
             .send()
             .await
             .context(RequestSnafu {
@@ -120,33 +93,32 @@ impl CrossrefClient {
                 stage: "parse-json",
             })
     }
-}
 
-struct RateLimitMiddleware {
-    limiter: RateLimiter<NotKeyed, InMemoryState, DefaultClock>,
-}
-
-impl RateLimitMiddleware {
-    /// Create a rate limiter with a per-second quota.
-    fn new(rate_limit_per_sec: u32) -> Self {
-        let per_second = NonZeroU32::new(rate_limit_per_sec.max(1))
-            .unwrap_or_else(|| NonZeroU32::new(1).expect("nonzero"));
-        let limiter = RateLimiter::direct(Quota::per_second(per_second));
-        Self { limiter }
+    /// Build the Crossref REST API URL for a DOI.
+    fn build_url(&self, doi: &Doi) -> String {
+        format!("{}/works/{}", self.base_url, doi.as_str())
     }
-}
 
-#[async_trait]
-impl Middleware for RateLimitMiddleware {
-    /// Enforce rate limiting before forwarding the request.
-    async fn handle(
-        &self,
-        req: reqwest::Request,
-        extensions: &mut Extensions,
-        next: Next<'_>,
-    ) -> reqwest_middleware::Result<reqwest::Response> {
-        self.limiter.until_ready().await;
-        next.run(req, extensions).await
+    /// Build default headers for the Crossref client.
+    fn default_headers(config: &CrossrefConfig) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(user_agent) = Self::user_agent_header_value(config)
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(&user_agent)
+        {
+            headers.insert(USER_AGENT, value);
+        }
+
+        headers
+    }
+
+    /// Build the User-Agent header value when configured.
+    fn user_agent_header_value(config: &CrossrefConfig) -> Option<String> {
+        match (config.user_agent_value(), config.mailto_value()) {
+            (Some(agent), Some(mailto)) => Some(format!("{} mailto:{}", agent, mailto)),
+            (Some(agent), None) => Some(agent.to_string()),
+            (None, Some(mailto)) => Some(format!("mailto:{}", mailto)),
+            (None, None) => None,
+        }
     }
 }
 
@@ -229,7 +201,7 @@ impl RetryableStrategy for RetryAfterStrategy {
     /// Mark responses or errors as retryable based on status.
     fn handle(
         &self,
-        res: &Result<reqwest::Response, reqwest_middleware::Error>,
+        res: &std::result::Result<reqwest::Response, reqwest_middleware::Error>,
     ) -> Option<Retryable> {
         match res {
             Ok(response) => {

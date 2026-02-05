@@ -23,9 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = CrossrefConfig::default();
     config.user_agent = Some("my-app".to_string());
+    config.mailto = Some("me@example.com".to_string());
 
     let client = CrossrefClient::new(config)?;
-    let response = client.fetch_metadata(&doi).await?;
+    let response = client.metadata(&doi).await?;
 
     let title = response.message.title.first().cloned().unwrap_or_default();
     println!("DOI: {}", doi.as_str());
@@ -40,6 +41,8 @@ cargo run --example basic
 ```
 
 ## 注意事项
-- 请求会自动带 `mailto=icoderdev@outlook.com`（可在 config 中覆盖）。
-- `user_agent` 只有在提供时才会设置，格式为 `{app_name} {mailto}`。
+- `mailto` 不会作为查询参数发送，而是放在 `user-agent` 里：`mailto:you@example.com`。
+- 如果同时设置 `user_agent` 与 `mailto`，则 header 格式为 `{user_agent} mailto:you@example.com`。
+- 建议使用礼帽池（polite pool）：提供 `mailto` 或调用 `polite` 以获得更高的速率与并发限制。
+- `rate_limit_per_sec` 与 `concurrency` 为可选配置：`None` 时会根据是否提供 `mailto` 自动选择 5/1（public）或 10/3（polite）。
 - 该库只做解析/请求，不做缓存与额外数据源回退。

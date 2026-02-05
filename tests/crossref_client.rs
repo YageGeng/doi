@@ -1,10 +1,8 @@
 use doi::{CrossrefClient, CrossrefConfig, Doi};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
-
-const DEFAULT_MAILTO: &str = "icoderdev@outlook.com";
 
 struct SequenceResponder {
     responses: Vec<ResponseTemplate>,
@@ -66,10 +64,7 @@ async fn crossref_client_retry_on_429() {
         .await;
 
     let client = CrossrefClient::new(config_for_server(&server)).expect("client");
-    let response = client
-        .fetch_metadata(&example_doi())
-        .await
-        .expect("response");
+    let response = client.metadata(&example_doi()).await.expect("response");
 
     assert_eq!(response.message.title, vec!["Example".to_string()]);
 }
@@ -87,7 +82,7 @@ async fn crossref_client_no_retry_on_404() {
         .await;
 
     let client = CrossrefClient::new(config_for_server(&server)).expect("client");
-    let result = client.fetch_metadata(&example_doi()).await;
+    let result = client.metadata(&example_doi()).await;
 
     assert!(result.is_err());
 }
@@ -97,11 +92,11 @@ async fn crossref_client_no_retry_on_404() {
 async fn crossref_client_user_agent_header() {
     let server = MockServer::start().await;
 
-    let expected_user_agent = format!("{} {}", "TestApp", DEFAULT_MAILTO);
+    let mailto = "test@example.com";
+    let expected_user_agent = format!("{} mailto:{}", "TestApp", mailto);
 
     Mock::given(method("GET"))
         .and(path("/works/10.5555/abc"))
-        .and(query_param("mailto", DEFAULT_MAILTO))
         .and(header("user-agent", expected_user_agent.as_str()))
         .respond_with(example_response())
         .expect(1)
@@ -110,16 +105,14 @@ async fn crossref_client_user_agent_header() {
 
     let mut config = config_for_server(&server);
     config.user_agent = Some("TestApp".to_string());
+    config.mailto = Some(mailto.to_string());
     let client = CrossrefClient::new(config).expect("client");
 
-    client
-        .fetch_metadata(&example_doi())
-        .await
-        .expect("response");
+    client.metadata(&example_doi()).await.expect("response");
 }
 
 #[tokio::test]
-/// Always includes the mailto query parameter.
+/// Includes the mailto in the User-Agent header when configured.
 async fn crossref_client_mailto_query_param() {
     let server = MockServer::start().await;
 
@@ -130,11 +123,10 @@ async fn crossref_client_mailto_query_param() {
         .mount(&server)
         .await;
 
-    let client = CrossrefClient::new(config_for_server(&server)).expect("client");
-    client
-        .fetch_metadata(&example_doi())
-        .await
-        .expect("response");
+    let mut config = config_for_server(&server);
+    config.mailto = Some("test@example.com".to_string());
+    let client = CrossrefClient::new(config).expect("client");
+    client.metadata(&example_doi()).await.expect("response");
 
     let received = server.received_requests().await.unwrap();
     let request = received.first().expect("request");
@@ -144,6 +136,37 @@ async fn crossref_client_mailto_query_param() {
         .find(|(key, _)| key == "mailto")
         .map(|(_, value)| value.to_string());
 
-    assert_eq!(mailto.as_deref(), Some(DEFAULT_MAILTO));
+    assert!(mailto.is_none());
+    let user_agent = request
+        .headers
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok());
+    assert_eq!(user_agent, Some("mailto:test@example.com"));
+}
+
+#[tokio::test]
+/// Omits mailto and user-agent when not configured.
+async fn crossref_client_no_mailto_query_param() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/works/10.5555/abc"))
+        .respond_with(example_response())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = CrossrefClient::new(config_for_server(&server)).expect("client");
+    client.metadata(&example_doi()).await.expect("response");
+
+    let received = server.received_requests().await.unwrap();
+    let request = received.first().expect("request");
+    let mailto = request
+        .url
+        .query_pairs()
+        .find(|(key, _)| key == "mailto")
+        .map(|(_, value)| value.to_string());
+
+    assert!(mailto.is_none());
     assert!(request.headers.get("user-agent").is_none());
 }
