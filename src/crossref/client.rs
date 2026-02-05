@@ -90,7 +90,8 @@ impl CrossrefClient {
         let _permit = self.concurrency.acquire().await.context(SemaphoreSnafu {
             stage: "acquire-permit",
         })?;
-        let url = format!("{}/works/{}", self.base_url, doi.canonical);
+        // Use the extracted DOI string directly in the Crossref request URL.
+        let url = format!("{}/works/{}", self.base_url, doi.as_str());
         let mut request = self
             .client
             .get(url)

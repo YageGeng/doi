@@ -4,7 +4,7 @@ Rust library for DOI extraction and Crossref metadata retrieval.
 
 ## 功能
 - 从 URL/文本中提取 DOI（严格匹配 `10.\d+/.+`）
-- 规范化 DOI（保留原始值 + canonical）
+- 解析 DOI 字符串（只保留提取结果）
 - 通过 Crossref REST API 获取完整结构化元信息
 
 ## 安装
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = client.fetch_metadata(&doi).await?;
 
     let title = response.message.title.first().cloned().unwrap_or_default();
-    println!("DOI: {}", doi.canonical);
+    println!("DOI: {}", doi.as_str());
     println!("Title: {}", title);
     Ok(())
 }

@@ -33,8 +33,7 @@ fn config_for_server(server: &MockServer) -> CrossrefConfig {
 /// Return a stable DOI value for tests.
 fn example_doi() -> Doi {
     Doi {
-        original: "10.5555/abc".to_string(),
-        canonical: "10.5555/abc".to_string(),
+        value: "10.5555/abc".to_string(),
     }
 }
 
