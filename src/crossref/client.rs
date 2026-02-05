@@ -1,6 +1,6 @@
 use crate::Doi;
 use crate::crossref::config::CrossrefConfig;
-use crate::crossref::error::CrossrefError;
+use crate::crossref::error::*;
 use crate::crossref::models::CrossrefResponse;
 use async_trait::async_trait;
 use governor::clock::DefaultClock;
@@ -16,6 +16,7 @@ use reqwest_retry::{
     Jitter, RetryDecision, RetryPolicy, RetryTransientMiddleware, Retryable, RetryableStrategy,
     default_on_request_failure,
 };
+use snafu::ResultExt;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -32,6 +33,7 @@ pub struct CrossrefClient {
 }
 
 impl CrossrefClient {
+    /// Build a Crossref client with retry and rate-limit middleware.
     pub fn new(config: CrossrefConfig) -> std::result::Result<Self, CrossrefError> {
         let mailto = config
             .mailto
@@ -62,7 +64,9 @@ impl CrossrefClient {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(|err| CrossrefError::InvalidResponse(err.to_string()))?;
+            .context(ReqwestSnafu {
+                stage: "build-client",
+            })?;
 
         let client = ClientBuilder::new(client)
             .with(limiter)
@@ -78,14 +82,14 @@ impl CrossrefClient {
         })
     }
 
+    /// Fetch metadata for a DOI from the Crossref REST API.
     pub async fn fetch_metadata(
         &self,
         doi: &Doi,
     ) -> std::result::Result<CrossrefResponse, CrossrefError> {
-        let _permit =
-            self.concurrency.acquire().await.map_err(|_| {
-                CrossrefError::InvalidResponse("request limiter closed".to_string())
-            })?;
+        let _permit = self.concurrency.acquire().await.context(SemaphoreSnafu {
+            stage: "acquire-permit",
+        })?;
         let url = format!("{}/works/{}", self.base_url, doi.canonical);
         let mut request = self
             .client
@@ -100,19 +104,20 @@ impl CrossrefClient {
         let response = request
             .send()
             .await
-            .map_err(|err| CrossrefError::InvalidResponse(err.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(CrossrefError::InvalidResponse(format!(
-                "http status {}",
-                response.status()
-            )));
-        }
+            .context(RequestSnafu {
+                stage: "send-request",
+            })?
+            .error_for_status()
+            .context(ReqwestSnafu {
+                stage: "http-status",
+            })?;
 
         response
             .json::<CrossrefResponse>()
             .await
-            .map_err(|err| CrossrefError::Parse(err.to_string()))
+            .context(ReqwestSnafu {
+                stage: "parse-json",
+            })
     }
 }
 
@@ -121,6 +126,7 @@ struct RateLimitMiddleware {
 }
 
 impl RateLimitMiddleware {
+    /// Create a rate limiter with a per-second quota.
     fn new(rate_limit_per_sec: u32) -> Self {
         let per_second = NonZeroU32::new(rate_limit_per_sec.max(1))
             .unwrap_or_else(|| NonZeroU32::new(1).expect("nonzero"));
@@ -131,6 +137,7 @@ impl RateLimitMiddleware {
 
 #[async_trait]
 impl Middleware for RateLimitMiddleware {
+    /// Enforce rate limiting before forwarding the request.
     async fn handle(
         &self,
         req: reqwest::Request,
@@ -148,18 +155,21 @@ struct RetryAfterState {
 }
 
 impl RetryAfterState {
+    /// Initialize retry state with no pending Retry-After value.
     fn new() -> Self {
         Self {
             next_retry: Arc::new(Mutex::new(None)),
         }
     }
 
+    /// Store the next allowed retry time from Retry-After.
     fn set_retry_after(&self, value: SystemTime) {
         if let Ok(mut guard) = self.next_retry.lock() {
             *guard = Some(value);
         }
     }
 
+    /// Read and clear the stored Retry-After time.
     fn take_retry_after(&self) -> Option<SystemTime> {
         self.next_retry.lock().ok()?.take()
     }
@@ -171,12 +181,14 @@ struct RetryAfterPolicy {
 }
 
 impl RetryAfterPolicy {
+    /// Build a retry policy with backoff and Retry-After tracking.
     fn new(backoff: ExponentialBackoff, state: RetryAfterState) -> Self {
         Self { backoff, state }
     }
 }
 
 impl RetryPolicy for RetryAfterPolicy {
+    /// Decide whether to retry, honoring Retry-After when present.
     fn should_retry(&self, request_start_time: SystemTime, n_past_retries: u32) -> RetryDecision {
         let decision = self
             .backoff
@@ -206,12 +218,14 @@ struct RetryAfterStrategy {
 }
 
 impl RetryAfterStrategy {
+    /// Create a strategy that records Retry-After values.
     fn new(state: RetryAfterState) -> Self {
         Self { state }
     }
 }
 
 impl RetryableStrategy for RetryAfterStrategy {
+    /// Mark responses or errors as retryable based on status.
     fn handle(
         &self,
         res: &Result<reqwest::Response, reqwest_middleware::Error>,
@@ -221,9 +235,10 @@ impl RetryableStrategy for RetryAfterStrategy {
                 let status = response.status();
                 if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                     if status == StatusCode::TOO_MANY_REQUESTS
-                        && let Some(retry_after) = parse_retry_after(response) {
-                            self.state.set_retry_after(retry_after);
-                        }
+                        && let Some(retry_after) = parse_retry_after(response)
+                    {
+                        self.state.set_retry_after(retry_after);
+                    }
                     return Some(Retryable::Transient);
                 }
                 None
@@ -233,6 +248,7 @@ impl RetryableStrategy for RetryAfterStrategy {
     }
 }
 
+/// Parse the Retry-After header into an absolute time.
 fn parse_retry_after(response: &reqwest::Response) -> Option<SystemTime> {
     let header_value = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     if let Ok(seconds) = header_value.parse::<u64>() {

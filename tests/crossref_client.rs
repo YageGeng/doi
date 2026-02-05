@@ -1,6 +1,6 @@
 use doi::{CrossrefClient, CrossrefConfig, Doi};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -12,6 +12,7 @@ struct SequenceResponder {
 }
 
 impl Respond for SequenceResponder {
+    /// Returns the next response in sequence, repeating the last when exhausted.
     fn respond(&self, _request: &Request) -> ResponseTemplate {
         let index = self.counter.fetch_add(1, Ordering::SeqCst);
         self.responses
@@ -21,6 +22,7 @@ impl Respond for SequenceResponder {
     }
 }
 
+/// Build a CrossrefConfig pointing to the mock server.
 fn config_for_server(server: &MockServer) -> CrossrefConfig {
     CrossrefConfig {
         base_url: server.uri(),
@@ -28,6 +30,7 @@ fn config_for_server(server: &MockServer) -> CrossrefConfig {
     }
 }
 
+/// Return a stable DOI value for tests.
 fn example_doi() -> Doi {
     Doi {
         original: "10.5555/abc".to_string(),
@@ -35,6 +38,7 @@ fn example_doi() -> Doi {
     }
 }
 
+/// Create a successful Crossref response payload.
 fn example_response() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(
         r#"{"status":"ok","message-type":"work","message-version":"1.0.0","message":{"title":["Example"]}}"#,
@@ -43,6 +47,7 @@ fn example_response() -> ResponseTemplate {
 }
 
 #[tokio::test]
+/// Retries on HTTP 429 and succeeds on the next response.
 async fn crossref_client_retry_on_429() {
     let server = MockServer::start().await;
 
@@ -62,12 +67,16 @@ async fn crossref_client_retry_on_429() {
         .await;
 
     let client = CrossrefClient::new(config_for_server(&server)).expect("client");
-    let response = client.fetch_metadata(&example_doi()).await.expect("response");
+    let response = client
+        .fetch_metadata(&example_doi())
+        .await
+        .expect("response");
 
     assert_eq!(response.message.title, vec!["Example".to_string()]);
 }
 
 #[tokio::test]
+/// Does not retry on HTTP 404 responses.
 async fn crossref_client_no_retry_on_404() {
     let server = MockServer::start().await;
 
@@ -85,6 +94,7 @@ async fn crossref_client_no_retry_on_404() {
 }
 
 #[tokio::test]
+/// Sends a user-agent header when configured.
 async fn crossref_client_user_agent_header() {
     let server = MockServer::start().await;
 
@@ -103,10 +113,14 @@ async fn crossref_client_user_agent_header() {
     config.user_agent = Some("TestApp".to_string());
     let client = CrossrefClient::new(config).expect("client");
 
-    client.fetch_metadata(&example_doi()).await.expect("response");
+    client
+        .fetch_metadata(&example_doi())
+        .await
+        .expect("response");
 }
 
 #[tokio::test]
+/// Always includes the mailto query parameter.
 async fn crossref_client_mailto_query_param() {
     let server = MockServer::start().await;
 
@@ -118,7 +132,10 @@ async fn crossref_client_mailto_query_param() {
         .await;
 
     let client = CrossrefClient::new(config_for_server(&server)).expect("client");
-    client.fetch_metadata(&example_doi()).await.expect("response");
+    client
+        .fetch_metadata(&example_doi())
+        .await
+        .expect("response");
 
     let received = server.received_requests().await.unwrap();
     let request = received.first().expect("request");

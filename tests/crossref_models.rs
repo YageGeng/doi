@@ -1,6 +1,7 @@
 use doi::crossref::models::CrossrefResponse;
 
 #[test]
+/// Deserializes the Crossref fixture and validates key fields.
 fn crossref_models_deserialize_fixture() {
     let payload = std::fs::read_to_string("tests/fixtures/crossref.json")
         .expect("fixture should be readable");

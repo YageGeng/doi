@@ -15,6 +15,7 @@ pub struct CrossrefConfig {
 }
 
 impl Default for CrossrefConfig {
+    /// Return default Crossref client configuration values.
     fn default() -> Self {
         Self {
             base_url: "https://api.crossref.org/v1".to_string(),
