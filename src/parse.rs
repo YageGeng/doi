@@ -1,8 +1,18 @@
 //! DOI (Digital Object Identifier) parsing and normalization library
 
 use regex::Regex;
+use snafu::{Snafu, ensure};
 use std::borrow::Cow;
+use std::str::FromStr;
 use std::sync::LazyLock;
+
+/// Errors returned when parsing a DOI from a string.
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub(crate)))]
+pub enum DoiParseError {
+    #[snafu(display("Invalid DOI in input at {stage}: {input}"))]
+    InvalidDoi { stage: &'static str, input: String },
+}
 
 /// A parsed DOI containing the extracted DOI string
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +54,32 @@ impl Doi {
             None
         }
     }
+
+    /// Parse a DOI from input text, returning a typed error on failure.
+    pub fn parse(input: &str) -> Result<Self, DoiParseError> {
+        // Avoid returning a generic error for empty input.
+        ensure!(
+            !input.trim().is_empty(),
+            InvalidDoiSnafu {
+                stage: "parse-input",
+                input: input.to_string(),
+            }
+        );
+
+        extract_doi_from_url(input).ok_or_else(|| DoiParseError::InvalidDoi {
+            stage: "extract-doi",
+            input: input.to_string(),
+        })
+    }
+}
+
+impl FromStr for Doi {
+    type Err = DoiParseError;
+
+    /// Parse a DOI using the same logic as `Doi::parse`.
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        Doi::parse(input)
+    }
 }
 
 /// Extract DOI from a URL or string
@@ -66,10 +102,21 @@ pub fn extract_doi_from_url(input: &str) -> Option<Doi> {
         return Some(doi);
     }
 
+    // Try to derive DOI from an arXiv identifier in the original string
+    if let Some(doi) = find_arxiv_doi(input) {
+        return Some(doi);
+    }
+
     // If no match, try percent-decoding and search again
     let decoded = percent_decode(input);
     if decoded != input
         && let Some(doi) = find_doi(&decoded)
+    {
+        return Some(doi);
+    }
+
+    if decoded != input
+        && let Some(doi) = find_arxiv_doi(&decoded)
     {
         return Some(doi);
     }
@@ -81,6 +128,12 @@ pub fn extract_doi_from_url(input: &str) -> Option<Doi> {
 /// Pattern: `10.\d+/[^/]+` - matches "10." followed by digits, then "/", then a single-path segment
 /// We stop at whitespace or URL delimiters to extract just the DOI portion
 static DOI_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"10\.\d+/[^\s?#&=/]+").unwrap());
+
+/// Static regex for arXiv identifier matching (new-style ids only)
+/// Matches: arXiv:2101.12345, arxiv.org/abs/2101.12345v2, arxiv.org/pdf/2101.12345.pdf
+static ARXIV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:arxiv:|arxiv\.org/(?:abs|pdf)/)(\d{4}\.\d{4,5})(?:v\d+)?").unwrap()
+});
 
 /// Find DOI pattern in a string using strict regex `10.\d+/.+`
 /// Returns the first match with trailing punctuation stripped
@@ -97,6 +150,19 @@ fn find_doi(input: &str) -> Option<Doi> {
             // Ensure we have at least "10." + digit + "/" + something
             let extracted = &matched[..end];
             return Some(Doi::new(extracted));
+        }
+    }
+
+    None
+}
+
+/// Find arXiv identifier and derive the corresponding DOI.
+fn find_arxiv_doi(input: &str) -> Option<Doi> {
+    if let Some(caps) = ARXIV_REGEX.captures(input) {
+        // Use the canonical arXiv DOI prefix with the extracted id.
+        if let Some(arxiv_id) = caps.get(1) {
+            let doi = format!("10.48550/arXiv.{}", arxiv_id.as_str());
+            return Some(Doi::new(&doi));
         }
     }
 
@@ -437,6 +503,30 @@ mod tests {
         let url = "https://doi.org/10.1000/a/b/c";
         let doi = extract_doi_from_url(url).unwrap();
         assert_eq!(doi.value, "10.1000/a");
+    }
+
+    #[test]
+    /// Derives DOI from an arXiv abstract URL.
+    fn doi_extract_from_arxiv_abs_url() {
+        let url = "https://arxiv.org/abs/2101.12345v2";
+        let doi = extract_doi_from_url(url).unwrap();
+        assert_eq!(doi.value, "10.48550/arXiv.2101.12345");
+    }
+
+    #[test]
+    /// Derives DOI from an arXiv PDF URL.
+    fn doi_extract_from_arxiv_pdf_url() {
+        let url = "https://arxiv.org/pdf/2101.12345.pdf";
+        let doi = extract_doi_from_url(url).unwrap();
+        assert_eq!(doi.value, "10.48550/arXiv.2101.12345");
+    }
+
+    #[test]
+    /// Derives DOI from an arXiv identifier string.
+    fn doi_extract_from_arxiv_id() {
+        let text = "arXiv:2101.12345";
+        let doi = extract_doi_from_url(text).unwrap();
+        assert_eq!(doi.value, "10.48550/arXiv.2101.12345");
     }
 
     #[test]

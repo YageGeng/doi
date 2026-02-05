@@ -14,21 +14,25 @@ cargo add doi
 
 ## 用法
 ```rust
-use doi::{CrossrefClient, CrossrefConfig, extract_doi_from_url};
+use doi::{DoiOrgClient, DoiOrgConfig, extract_doi_from_url};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let doi = extract_doi_from_url("https://doi.org/10.5555/12345678")
         .ok_or("doi not found")?;
 
-    let mut config = CrossrefConfig::default();
+    let mut config = DoiOrgConfig::default();
     config.user_agent = Some("my-app".to_string());
     config.mailto = Some("me@example.com".to_string());
 
-    let client = CrossrefClient::new(config)?;
+    let client = DoiOrgClient::new(config)?;
     let response = client.metadata(&doi).await?;
 
-    let title = response.message.title.first().cloned().unwrap_or_default();
+    let title = response
+        .title
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
     println!("DOI: {}", doi.as_str());
     println!("Title: {}", title);
     Ok(())
@@ -41,8 +45,7 @@ cargo run --example basic
 ```
 
 ## 注意事项
-- `mailto` 不会作为查询参数发送，而是放在 `user-agent` 里：`mailto:you@example.com`。
+- `DoiOrgClient` 会把 `mailto` 放在 `user-agent` 里：`mailto:you@example.com`。
 - 如果同时设置 `user_agent` 与 `mailto`，则 header 格式为 `{user_agent} mailto:you@example.com`。
-- 建议使用礼帽池（polite pool）：提供 `mailto` 或调用 `polite` 以获得更高的速率与并发限制。
-- `rate_limit_per_sec` 与 `concurrency` 为可选配置：`None` 时会根据是否提供 `mailto` 自动选择 5/1（public）或 10/3（polite）。
+- `CrossrefClient` 使用 `CrossrefConfig` 的 `rate_limit_per_sec`/`concurrency`（`None` 时会根据 `mailto` 自动选择 5/1 或 10/3）。
 - 该库只做解析/请求，不做缓存与额外数据源回退。

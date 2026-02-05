@@ -62,7 +62,7 @@ impl CrossrefClient {
         })
     }
 
-    /// Fetch metadata for a DOI from the Crossref REST API.
+    /// Fetch Crossref JSON metadata for a DOI from the Crossref REST API.
     pub async fn metadata(
         &self,
         doi: &Doi,
@@ -71,7 +71,7 @@ impl CrossrefClient {
             stage: "acquire-permit",
         })?;
 
-        let url = self.build_url(doi);
+        let url = self.build_crossref_url(doi);
 
         let response = self
             .client
@@ -95,7 +95,7 @@ impl CrossrefClient {
     }
 
     /// Build the Crossref REST API URL for a DOI.
-    fn build_url(&self, doi: &Doi) -> String {
+    fn build_crossref_url(&self, doi: &Doi) -> String {
         format!("{}/works/{}", self.base_url, doi.as_str())
     }
 
