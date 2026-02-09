@@ -9,4 +9,10 @@ pub enum DoiOrgError {
         stage: &'static str,
         source: reqwest::Error,
     },
+
+    #[snafu(display("Failed to serialize at {stage}: {source}"))]
+    SerializePath {
+        source: serde_path_to_error::Error<serde_json::Error>,
+        stage: &'static str,
+    },
 }

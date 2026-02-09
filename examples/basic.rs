@@ -15,7 +15,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = client.metadata(&doi).await?;
 
     println!("{}", serde_json::to_string(&response).unwrap());
-    // Show the extracted DOI string for reference.
     println!("DOI: {}", doi.as_str());
 
     let arxiv_doi = "https://arxiv.org/abs/2512.06879".parse()?;

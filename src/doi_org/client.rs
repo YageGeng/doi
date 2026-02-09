@@ -1,7 +1,6 @@
-use crate::Doi;
-use crate::csl::CslMessage;
 use crate::doi_org::config::DoiOrgConfig;
 use crate::doi_org::error::*;
+use crate::{Doi, csl::*};
 use reqwest::header::{ACCEPT, USER_AGENT};
 use snafu::ResultExt;
 
@@ -29,8 +28,9 @@ impl DoiOrgClient {
     }
 
     /// Fetch CSL-JSON metadata for a DOI via doi.org content negotiation.
-    pub async fn metadata(&self, doi: &Doi) -> std::result::Result<CslMessage, DoiOrgError> {
+    pub async fn metadata(&self, doi: &Doi) -> std::result::Result<DoiMetadata, DoiOrgError> {
         let url = self.build_url(doi);
+
         let response = self
             .client
             .get(url)
@@ -45,9 +45,17 @@ impl DoiOrgClient {
                 stage: "http-status",
             })?;
 
-        response.json::<CslMessage>().await.context(RequestSnafu {
-            stage: "parse-json",
-        })
+        let text = response.text().await.context(RequestSnafu {
+            stage: "response-body",
+        })?;
+
+        let mut deserializer = serde_json::Deserializer::from_str(&text);
+
+        serde_path_to_error::deserialize::<_, DoiMetadata>(&mut deserializer).context(
+            SerializePathSnafu {
+                stage: "parse-json",
+            },
+        )
     }
 
     /// Build the doi.org URL for a DOI.
